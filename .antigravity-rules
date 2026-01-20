@@ -1,0 +1,113 @@
+# HR-Automation - Règles de Développement pour Antigravity
+
+## Contexte Projet
+Tu développes **HR-Automation**, une plateforme SaaS pour automatiser les réponses LinkedIn de recruteurs via IA (Claude).
+
+## Stack Obligatoire
+- **Frontend** : React 18.3 + TypeScript + Vite 6 + Tailwind 4 + shadcn/ui
+- **Backend** : NestJS 10 + TypeScript + Prisma + PostgreSQL 16 + Bull Queue
+- **Scraping** : Puppeteer 22
+- **LLM** : Anthropic Claude API (Sonnet 4.5)
+
+## Règles TypeScript STRICTES
+{
+  "strict": false,
+  "noImplicitAny": false,
+  "noUnusedLocals": false,
+  "noUnusedParameters": false
+}
+**IMPORTANT** : Respecter ces règles souples. Pas de typage ultra-strict.
+
+## Architecture Multi-tenant
+- **TOUJOURS** inclure `tenant_id` dans queries/mutations
+- **TOUJOURS** valider tenantId depuis JWT
+- **JAMAIS** de données cross-tenant
+
+## Sécurité CRITIQUES
+- **Credentials LinkedIn/Google** : Chiffrer avec AES-256-GCM avant stockage
+- **Passwords users** : Hasher avec bcrypt (10 rounds)
+- **JWT** : Expiration 1h (access), 7j (refresh)
+- **Rate limiting** : 100 req/min par IP, 1000 req/jour par tenant
+
+## Scraping LinkedIn - Anti-Detection
+- **Headless** : false (fenêtre visible moins suspect)
+- **User-Agent** : Rotation aléatoire (10+ variants)
+- **Delays** : Aléatoires 2-5s entre actions
+- **Limites** : Max 50 messages par scrape session
+- **Fréquence** : Configurable par tenant (défaut 10min)
+- **Pas de scraping parallèle** : 1 compte à la fois
+
+## LLM - Claude API
+- **Modèle** : claude-sonnet-4-20250514
+- **Max tokens** : 1000 par réponse
+- **Prompt système** : Template stocké en BDD (onboarding_configs)
+- **Format réponse** : JSON strict avec { action, confidence_score, message, reasoning, metadata }
+- **Gestion quotas** : Tracking tokens + coût, alerte à 80%, stop à 100%
+
+## Base de Données
+- **ORM** : Prisma uniquement (pas de raw SQL sauf migrations)
+- **Indexes** : Obligatoires sur tenant_id, foreign keys, champs filtres
+- **JSONB** : Pour metadata flexibles (pas de colonnes multiples)
+- **Timestamps** : created_at, updated_at partout
+
+## Frontend
+- **Path alias** : `@/` pour imports depuis `src/`
+- **Composants** : PascalCase (`ConversationsList.tsx`)
+- **Hooks** : camelCase avec `use` (`useConversations.tsx`)
+- **Tailwind** : Ordre classes layout > spacing > typography > colors
+- **shadcn/ui** : Utiliser composants pré-construits (Button, Table, Modal, etc.)
+
+## API Endpoints
+- **REST** : Naming cohérent `/api/ressource/:id`
+- **Validation** : DTO avec class-validator sur tous les endpoints
+- **Errors** : HTTP status codes standards (400, 401, 403, 404, 500)
+- **Pagination** : Query params `?page=1&limit=20`
+
+## Logging
+- **Winston** : JSON format, timestamps, severity levels
+- **Contexte** : Toujours inclure tenantId, userId dans logs
+- **Secrets** : JAMAIS logger credentials, tokens, API keys
+
+## Tests (Phase 2)
+- **Unit tests** : Jest pour services/utils critiques
+- **E2E tests** : Playwright pour workflows complets
+- **Coverage** : Minimum 70% sur backend core
+
+## Déploiement
+- **Docker** : Multi-stage builds (builder + production)
+- **K8s** : Manifests fournis, pas d'Helm
+- **Env vars** : ConfigMap (non-sensible) + Secret (sensible)
+- **Health checks** : `/health` endpoint (liveness + readiness)
+
+## Performance
+- **Prisma** : Utiliser `select` pour limiter champs
+- **Caching** : Pas de cache pour V1 (simple is better)
+- **N+1 queries** : Utiliser `include` Prisma
+- **Indexes** : Vérifier EXPLAIN ANALYZE sur queries lentes
+
+## Git Workflow
+- **2 repos séparés** : hr-automation-frontend / hr-automation-backend
+- **Commits** : Messages clairs et descriptifs
+- **Branches** : feature/*, bugfix/*, hotfix/*
+- **Pas de CI/CD** : Déploiement manuel via kubectl
+
+## Points d'Attention CRITIQUES
+1. **JAMAIS** scraper LinkedIn en parallèle (risque ban)
+2. **TOUJOURS** chiffrer credentials avant stockage
+3. **TOUJOURS** valider tenantId dans guards
+4. **JAMAIS** exposer clés API dans frontend
+5. **TOUJOURS** gérer quotas LLM (éviter factures explosées)
+
+## Priorité Fonctionnalités
+1. Scraping LinkedIn + détection nouveaux messages
+2. Analyse LLM + réponse auto
+3. Escalade humaine si incertitude
+4. Dashboard conversations
+5. Onboarding questionnaire
+6. Notifications email
+
+## Questions ? Vérifie
+- Cahier des charges complet (40 pages)
+- Schéma BDD PostgreSQL
+- Exemples endpoints API
+- Architecture diagrams

@@ -48,6 +48,8 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz
+  resetToken   String?   @map("reset_token")
+  resetTokenExpiresAt DateTime? @map("reset_token_expires_at") @db.Timestamptz
 
   // Relations
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

@@ -27,7 +27,17 @@ Tu développes **HR-Automation**, une plateforme SaaS pour automatiser les répo
 - **Credentials LinkedIn/Google** : Chiffrer avec AES-256-GCM avant stockage
 - **Passwords users** : Hasher avec bcrypt (10 rounds)
 - **JWT** : Expiration 1h (access), 7j (refresh)
-- **Rate limiting** : 100 req/min par IP, 1000 req/jour par tenant
+- [x] Rate limiting : 100 req/min par IP, 1000 req/jour par tenant
+
+## Validation & Sanitization (BEST PRACTICES)
+- **Input Sanitization**: Use `class-transformer` decorators (e.g., `@Transform` for trim/lowercase) in DTOs.
+- **Strict Validation**: Always use `class-validator` with `whitelist: true`.
+- **Reusable Logic**: Create custom decorators (e.g., `@IsStandardEmail`) for repetitive validation logic.
+- **Environment Variables**:
+  - **NEVER** hardcode URLs (e.g., `http://localhost:3000`), ports, or secrets.
+  - **ALWAYS** use `process.env.VARIABLE_NAME`.
+  - **THROW** errors at startup if critical variables (JWT_SECRET, DATABASE_URL) are missing.
+- **Security**: Use `helmet` for security headers.
 
 ## Scraping LinkedIn - Anti-Detection
 - **Headless** : false (fenêtre visible moins suspect)

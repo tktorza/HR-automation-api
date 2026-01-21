@@ -1,4 +1,4 @@
-import { IsString, MinLength, IsNotEmpty } from 'class-validator';
+import { IsString, MinLength, IsNotEmpty, IsOptional } from 'class-validator';
 import { IsStandardEmail } from '../../common/decorators/standard-email.decorator';
 
 export class RegisterDto {
@@ -11,6 +11,6 @@ export class RegisterDto {
 	password: string;
 
 	@IsString()
-	@IsNotEmpty()
-	tenantName: string;
+	@IsOptional()
+	tenantName?: string;
 }

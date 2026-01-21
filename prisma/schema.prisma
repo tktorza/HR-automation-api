@@ -223,6 +223,11 @@ model OnboardingConfig {
   calendarLink        String?  @map("calendar_link")
   confidenceThreshold Int      @default(70) @map("confidence_threshold")
   notificationEmails  String[] @map("notification_emails")
+  
+  // Hybrid LLM Config
+  googleAiApiKey        String?  @map("google_ai_api_key")
+  llmProviderPreference String?  @default("auto") @map("llm_provider_preference") // auto, gemini-only, claude-only
+
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 

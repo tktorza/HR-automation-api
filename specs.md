@@ -829,20 +829,24 @@ async isSessionExpired(page: Page): Promise<boolean> {
 
 ## 8. Intelligence Artificielle - LLM
 
-### 8.1 Choix du Modèle
+### 8.1 Architecture LLM Hybride (Implémenté)
 
-**Modèle principal : Claude Sonnet 4.5**
+**Modèle principal : Gemini 2.0 Flash**
+- 70% des réponses (simples)
+- 0.075$ / 1M input, 0.30$ / 1M output
+- Utilisé par défaut pour les messages courts et non critiques.
 
-**Justification :**
-- ✅ Excellent rapport qualité/prix/performance
-- ✅ Compréhension contextuelle supérieure (conversations longues)
-- ✅ Meilleur en français/anglais que GPT-4
-- ✅ Moins verbose, plus adapté aux réponses professionnelles courtes
-- ✅ Tarification : ~3$/M tokens input, ~15$/M tokens output
+**Modèle fallback : Claude Haiku 4.5 / Sonnet**
+- 25% des réponses (complexes, escalades)
+- 0.25$ / 1M input, 1.25$ / 1M output
+- Activé si confiance < 75%, mots-clés sensibles (salaire, litige), ou sentiment négatif.
 
-**Fallback : Claude Haiku 4.5**
-- Si budget serré (10x moins cher)
-- Pour tâches simples (classification, détection langue)
+**Escalade humaine : 5%**
+- Cas critiques non résolus.
+- Notification email.
+
+**Coût moyen estimé : ~0.30$ / 1000 réponses**
+(Contre 2$ avec Claude Sonnet seul).
 
 ### 8.2 Architecture Prompt Système
 

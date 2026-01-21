@@ -56,11 +56,12 @@ export class AuthService {
 			const passwordHash = await bcrypt.hash(password, salt);
 
 			const result = await this.prisma.$transaction(async (prisma) => {
-				const slug = tenantName.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Math.floor(Math.random() * 10000);
+				const effectiveTenantName = tenantName || `${email.split('@')[0]}'s Workspace`;
+				const slug = effectiveTenantName.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + Math.floor(Math.random() * 10000);
 
 				const tenant = await prisma.tenant.create({
 					data: {
-						name: tenantName,
+						name: effectiveTenantName,
 						slug: slug,
 					},
 				});

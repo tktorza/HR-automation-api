@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import * as puppeteer from 'puppeteer';
 import { Browser, Page } from 'puppeteer';
 import { CryptoService } from '../crypto/crypto.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class LinkedinService implements OnModuleDestroy {
@@ -9,10 +10,52 @@ export class LinkedinService implements OnModuleDestroy {
 	private page: Page | null = null;
 	private readonly logger = new Logger(LinkedinService.name);
 
-	constructor(private cryptoService: CryptoService) { }
+	constructor(
+		private cryptoService: CryptoService,
+		private prisma: PrismaService,
+	) { }
 
 	async onModuleDestroy() {
 		await this.closeBrowser();
+	}
+
+	async getAccountsForTenant(tenantId: string) {
+		const accounts = await this.prisma.linkedinAccount.findMany({
+			where: { tenantId },
+			select: {
+				id: true,
+				emailEncrypted: true,
+				isActive: true,
+				lastScrapeAt: true,
+			}
+		});
+
+		return accounts.map(acc => ({
+			id: acc.id,
+			email: this.cryptoService.decrypt(acc.emailEncrypted),
+			isActive: acc.isActive,
+			lastScrapeAt: acc.lastScrapeAt
+		}));
+	}
+
+	async addAccount(tenantId: string, email: string, password: string) {
+		const emailEncrypted = this.cryptoService.encrypt(email);
+		const passwordEncrypted = this.cryptoService.encrypt(password);
+
+		return this.prisma.linkedinAccount.create({
+			data: {
+				tenantId,
+				emailEncrypted,
+				passwordEncrypted,
+				isActive: true,
+			},
+			select: {
+				id: true,
+				emailEncrypted: true,
+				isActive: true,
+				lastScrapeAt: true,
+			}
+		});
 	}
 
 	async launchBrowser() {

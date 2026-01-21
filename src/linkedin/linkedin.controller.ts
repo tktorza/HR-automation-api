@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Request, BadRequestException } from '@nestjs/common';
 import { LinkedinService } from './linkedin.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { IsNotEmpty, IsString } from 'class-validator';
@@ -9,10 +9,30 @@ class Submit2faDto {
 	code: string;
 }
 
+class CreateAccountDto {
+	@IsString()
+	@IsNotEmpty()
+	email: string;
+
+	@IsString()
+	@IsNotEmpty()
+	password: string;
+}
+
 @Controller('linkedin')
 @UseGuards(JwtAuthGuard)
 export class LinkedinController {
 	constructor(private readonly linkedinService: LinkedinService) { }
+
+	@Get()
+	async getAccounts(@Request() req: any) {
+		return this.linkedinService.getAccountsForTenant(req.user.tenantId);
+	}
+
+	@Post()
+	async createAccount(@Body() dto: CreateAccountDto, @Request() req: any) {
+		return this.linkedinService.addAccount(req.user.tenantId, dto.email, dto.password);
+	}
 
 	@Post('2fa')
 	async submit2fa(@Body() dto: Submit2faDto) {

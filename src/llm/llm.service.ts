@@ -108,7 +108,8 @@ export class LlmService implements OnModuleInit {
 		tenantId: string,
 		messages: any[], // Now objects
 		contextSynthesis?: string,
-		history: any[] = [] // Now objects
+		history: any[] = [], // Now objects
+		partnerName: string = 'Candidate' // NEW ARGUMENT
 	): Promise<LLMResponse> {
 		await this.checkQuota(tenantId);
 
@@ -129,7 +130,9 @@ export class LlmService implements OnModuleInit {
 		// 2. Build Contextual System Prompt
 		let system = SYSTEM_PROMPT
 			.replace('{{CONTEXT_SYNTHESIS}}', contextSynthesis || 'No specific style context available. Be professional and polite.')
-			.replace('{{CALENDAR_LINK}}', calendarLink);
+			.replace('{{CALENDAR_LINK}}', calendarLink)
+			.replace('{{PARTNER_NAME}}', partnerName) // REPLACE VARIABLE
+			.replace('{{MESSAGES}}', '(See User Message)'); // CLEANUP
 
 		// Format history and unread messages from Objects to Strings
 		const formatMsg = (m: any) => {
@@ -137,7 +140,6 @@ export class LlmService implements OnModuleInit {
 			// Use sender: text format
 			return `${m.sender || 'Unknown'}: ${m.text}`;
 		};
-
 		const historyText = history.map(formatMsg).join('\n');
 		const unreadText = messages.map(formatMsg).join('\n');
 

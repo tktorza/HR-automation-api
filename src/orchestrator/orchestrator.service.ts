@@ -13,7 +13,7 @@ export class OrchestratorService {
 
 	// TEMPORARY SAFETY RULES
 	private readonly DRY_RUN_MODE = false; // Set to false to actually send messages
-	private readonly MAX_UNREAD_LIMIT = 1; // Set to 20 when confident
+	private readonly MAX_UNREAD_LIMIT = 10; // Increased to 10 to find Jessy Miller
 
 	constructor(
 		private prisma: PrismaService,
@@ -117,6 +117,26 @@ export class OrchestratorService {
 									});
 								}
 
+								// LOGIC: Check if this conversation has pending unread messages
+								const msgs = (conv.messages || []) as any[];
+								let unreadCount = 0;
+								let processingStatus = 'IDLE';
+
+								// Find last user message
+								const lastUserIdx = msgs.map(m => m.sender).lastIndexOf('user');
+								if (lastUserIdx !== -1) {
+									// Everything after is unread
+									unreadCount = msgs.slice(lastUserIdx + 1).length;
+								} else {
+									// No user message -> All unread
+									unreadCount = msgs.length;
+								}
+
+								if (unreadCount > 0) {
+									processingStatus = 'PENDING_LLM';
+									this.logger.log(`[Context Init] Found actionable conversation with ${conv.partnerName} (${unreadCount} unread). Queuing for LLM.`);
+								}
+
 								// Upsert Conversation
 								const existingConv = await this.prisma.conversation.findFirst({
 									where: { contactId: contact.id }
@@ -128,7 +148,9 @@ export class OrchestratorService {
 										data: {
 											messages: conv.messages,
 											lastScrapedAt: new Date(),
-											threadUrl: conv.threadUrl // Save thread URL
+											threadUrl: conv.threadUrl, // Save thread URL
+											unreadCount, // Update unread count
+											processingStatus // Queue if needed
 										}
 									});
 								} else {
@@ -138,8 +160,9 @@ export class OrchestratorService {
 											contactId: contact.id,
 											messages: conv.messages,
 											lastScrapedAt: new Date(),
-											unreadCount: 0,
-											threadUrl: conv.threadUrl // Save thread URL
+											unreadCount,
+											threadUrl: conv.threadUrl, // Save thread URL
+											processingStatus
 										}
 									});
 								}
@@ -171,8 +194,29 @@ export class OrchestratorService {
 			// PHASE 1: SCRAPE & PERSIST (Status: PENDING_LLM)
 			// =========================================================
 			this.logger.log('--- PHASE 1: SCRAPE & PERSIST (SYNC STRATEGY) ---');
-			// Scrape returns FULL HISTORY now as 'messages'
-			const scrapedBatches = await this.linkedinService.scrapeMessages(this.MAX_UNREAD_LIMIT);
+
+			// STRATEGY: 
+			// 1. Scrape "Unread" filter (Catch missed messages)
+			// 2. Scrape "Recent" (Catch "Deleted Reply" cases where thread is marked read but last msg is contact)
+
+			this.logger.log('Step 1.1: Scraping Unread Filter...');
+			const unreadBatches = await this.linkedinService.scrapeMessages(this.MAX_UNREAD_LIMIT);
+
+			this.logger.log('Step 1.2: Scraping Recent Context (to catch deleted replies)...');
+			// Re-use scrapeRecentConversations but we need to ensure it returns Full Details if possible.
+			// Actually scrapeRecentConversations returns limited info? No, it scrapes messages.
+			const recentBatches = await this.linkedinService.scrapeRecentConversations(10); // Check top 10 inbox
+
+			// MERGE & DEDUPLICATE
+			const allBatches = [...unreadBatches];
+			for (const recent of recentBatches) {
+				if (!allBatches.find(b => b.threadUrl === recent.threadUrl || b.partnerName === recent.partnerName)) {
+					allBatches.push(recent);
+				}
+			}
+			this.logger.log(`Total conversations to process: ${allBatches.length} (Unread: ${unreadBatches.length}, Recent: ${recentBatches.length})`);
+
+			const scrapedBatches = allBatches;
 
 			for (const batch of scrapedBatches) {
 				// Upsert Contact
@@ -295,10 +339,28 @@ export class OrchestratorService {
 			// =========================================================
 			this.logger.log('--- PHASE 2: GENERATE DRAFTS ---');
 			const pendingLlmConversations = await this.prisma.conversation.findMany({
-				where: { tenantId: account.tenantId, processingStatus: 'PENDING_LLM' }
+				where: { tenantId: account.tenantId, processingStatus: 'PENDING_LLM' },
+				include: { contact: true } // Include contact for filtering
 			});
 
 			for (const conv of pendingLlmConversations) {
+				// ===========================================
+				// TODO: REMOVE THIS FILTER AFTER TESTING (JESSY MILLER ONLY)
+				// ===========================================
+				const whitelist = ['Jessy Miller', 'Ilan Hayat'];
+				if (!whitelist.some(name => conv.contact?.fullName?.includes(name))) {
+					this.logger.log(`[TEST MODE] Skipping ${conv.contact?.fullName} (Not in whitelist).`);
+					// Optional: Reset status to IDLE so it doesn't get stuck? 
+					// Or just leave pending? Better to leave pending or set to IDLE.
+					// Let's set to IDLE to avoid cluttering logs next run.
+					await this.prisma.conversation.update({
+						where: { id: conv.id },
+						data: { processingStatus: 'IDLE' }
+					});
+					continue;
+				}
+				// ===========================================
+
 				const messages = conv.messages as any[];
 				// Define what we send to LLM.
 
@@ -322,12 +384,20 @@ export class OrchestratorService {
 
 				this.logger.log(`Generating draft for ${conv.id}. Context: ${history.length} msgs, Target: ${unreadMessages.length} msgs.`);
 
+				const partnerName = conv.contact?.fullName || 'Candidate';
+
 				const response = await this.llmService.generateResponse(
 					account.tenantId,
 					unreadMessages,
 					contextSynthesis,
-					history
+					history,
+					partnerName // Pass Partner Name
 				);
+
+				// SAFETY CLEANUP: Replace any remaining placeholders in the output
+				if (response.suggested_response) {
+					response.suggested_response = response.suggested_response.replace(/{{PARTNER_NAME}}/g, partnerName);
+				}
 
 				// LOG THE GENERATED CONTENT FOR USER VISIBILITY
 				if (response.suggested_response) {
@@ -366,10 +436,21 @@ export class OrchestratorService {
 			// =========================================================
 			this.logger.log('--- PHASE 3: SEND REPLIES ---');
 			const pendingReplyConversations = await this.prisma.conversation.findMany({
-				where: { tenantId: account.tenantId, processingStatus: 'PENDING_REPLY' }
+				where: { tenantId: account.tenantId, processingStatus: 'PENDING_REPLY' },
+				include: { contact: true }
 			});
 
 			for (const conv of pendingReplyConversations) {
+				// ===========================================
+				// TODO: REMOVE THIS FILTER AFTER TESTING (JESSY MILLER ONLY)
+				// ===========================================
+				const whitelist = ['Jessy Miller', 'Ilan Hayat'];
+				if (!whitelist.some(name => conv.contact?.fullName?.includes(name))) {
+					this.logger.log(`[TEST MODE] NOT Sending reply to ${conv.contact?.fullName} (Not in whitelist).`);
+					continue;
+				}
+				// ===========================================
+
 				if (!conv.threadUrl) {
 					this.logger.warn(`Skipping conversation ${conv.id} - No Thread URL.`);
 					continue;

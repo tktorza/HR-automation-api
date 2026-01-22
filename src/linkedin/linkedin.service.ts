@@ -342,6 +342,12 @@ export class LinkedinService implements OnModuleDestroy {
 
 						if (!textContent) return null;
 
+						// IGNORE DELETED MESSAGES
+						const lower = textContent.toLowerCase();
+						if (lower.includes('ce message a été supprimé') || lower.includes('this message was deleted')) {
+							return null;
+						}
+
 						const isMine = !el.classList.contains('msg-s-event-listitem--other');
 						const sender = isMine ? 'user' : 'contact';
 
@@ -356,9 +362,16 @@ export class LinkedinService implements OnModuleDestroy {
 				const partnerName = await this.page.evaluate(() => {
 					// Try to find the header title
 					const header = document.querySelector('.msg-entity-lockup__entity-title');
-					if (header) return header.textContent?.trim();
+					if (header) {
+						const raw = header.textContent || '';
+						return raw.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+					}
 					return 'Unknown';
 				}) || 'Unknown';
+
+				if (partnerName === 'Unknown') {
+					this.logger.warn(`Could not extract partner name for conversation index ${i}. Header selector might be wrong or load fail.`);
+				}
 
 				conversationsData.push({
 					conversationId: `conv-${i}`,
@@ -499,6 +512,12 @@ export class LinkedinService implements OnModuleDestroy {
 
 						if (!textContent) return null;
 
+						// IGNORE DELETED MESSAGES
+						const lower = textContent.toLowerCase();
+						if (lower.includes('ce message a été supprimé') || lower.includes('this message was deleted')) {
+							return null;
+						}
+
 						return { text: textContent, sender, createdAt, metadata: { isLlmGenerated: false } };
 					}).filter(t => t !== null);
 				});
@@ -507,7 +526,11 @@ export class LinkedinService implements OnModuleDestroy {
 
 				const partnerName = await this.page.evaluate(() => {
 					const header = document.querySelector('.msg-entity-lockup__entity-title');
-					return header ? header.textContent?.trim() : 'Unknown';
+					if (header) {
+						const raw = header.textContent || '';
+						return raw.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+					}
+					return 'Unknown';
 				}) || 'Unknown';
 
 				results.push({

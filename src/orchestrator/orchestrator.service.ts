@@ -297,6 +297,13 @@ export class OrchestratorService {
 
 				this.logger.log(`Processing Reply for ${conv.id} (Dry Run: ${this.DRY_RUN_MODE})`);
 
+				// DEBUG LOGS requested by User
+				const lastMessage = (conv.messages as any[]).slice(-1)[0];
+				if (lastMessage) {
+					this.logger.log(`[DEBUG] Replying to (Sender: ${lastMessage.sender}): "${lastMessage.text?.substring(0, 50)}..."`);
+				}
+				this.logger.log(`[DEBUG] Proposed Reply: "${lastAction.finalMessage}"`);
+
 				const success = await this.linkedinService.replyToConversation(
 					conv.threadUrl,
 					lastAction.finalMessage,

@@ -324,25 +324,32 @@ export class LinkedinService implements OnModuleDestroy {
 
 					return elements.map(el => {
 						const body = el.querySelector('.msg-s-event-listitem__body');
-						let text = body?.textContent || '';
+						if (!body) return null;
 
-						text = text
-							.replace(/[\n\r]+/g, ' ')
-							.replace(/\s+/g, ' ')
+						// ROBUST EXTRACTION: Clone to avoid DOM impact, replace BRs, get textContent
+						const clone = body.cloneNode(true) as HTMLElement;
+						const breaks = clone.querySelectorAll('br');
+						breaks.forEach(br => br.replaceWith('\n'));
+
+						let textContent = clone.textContent || '';
+
+						// Cleanup
+						textContent = textContent
 							.replace('Open emoji keyboard', '')
 							.replace('Voir la traduction', '')
+							.replace(/[\r\n]+/g, '\n') // Collapse multiple newlines
 							.trim();
 
-						if (!text) return null;
+						if (!textContent) return null;
 
 						const isMine = !el.classList.contains('msg-s-event-listitem--other');
-						const sender = isMine ? 'user' : 'contact'; // Standardized values
+						const sender = isMine ? 'user' : 'contact';
 
-						// Attempt to get time
+						// Attemp to get time
 						const timeEl = el.querySelector('time');
 						const createdAt = timeEl ? timeEl.getAttribute('datetime') || new Date().toISOString() : new Date().toISOString();
 
-						return { text, sender, createdAt, metadata: { isLlmGenerated: false } };
+						return { text: textContent, sender, createdAt, metadata: { isLlmGenerated: false } };
 					}).filter(msg => msg !== null);
 				});
 
@@ -373,98 +380,141 @@ export class LinkedinService implements OnModuleDestroy {
 		if (!this.page) return [];
 
 		try {
-			this.logger.log(`Navigating to Messaging to check unread (Limit: ${limit})...`);
-			await this.page.goto('https://www.linkedin.com/messaging/?filter=unread', { waitUntil: 'domcontentloaded', timeout: 20000 });
-			await this.randomDelay(2000, 4000);
+			this.logger.log(`Navigating to Messaging...`);
 
-			const listSelector = '.msg-conversation-listitem, .msg-conversation-card';
+			if (!this.page.url().includes('messaging')) {
+				await this.page.goto('https://www.linkedin.com/messaging/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+				await this.randomDelay(2000, 4000);
+			}
+
+			// Click "Non lus" filter to show only unread messages
+			this.logger.log('Clicking "Non lus" filter...');
+			const clickedFilter = await this.page.evaluate(async () => {
+				const buttons = Array.from(document.querySelectorAll('button'));
+				// Look for "Non lus" or "Unread"
+				const unreadBtn = buttons.find(b => {
+					const text = (b.innerText || '').trim().toLowerCase();
+					return text.includes('non lus') || text.includes('unread');
+				});
+				if (unreadBtn) {
+					unreadBtn.click();
+					return true;
+				}
+				return false;
+			});
+
+			if (!clickedFilter) {
+				this.logger.warn('Could not find "Non lus" filter button. Falling back to all messages (might include read).');
+			} else {
+				await this.randomDelay(2000, 4000); // Wait for filter to apply
+			}
+
+			const listSelector = '.msg-conversation-listitem';
 			try {
 				await this.page.waitForSelector(listSelector, { timeout: 10000 });
 			} catch (e) {
-				this.logger.warn(`Timeout waiting for selector "${listSelector}". Taking screenshot...`);
-				if (this.page) await this.page.screenshot({ path: 'debug-scraping-msgs-timeout.png' });
+				this.logger.warn(`No conversations found after filtering (or timeout).`);
+				if (this.page) await this.page.screenshot({ path: 'debug-scraping-msgs-filter-empty.png' });
 				return [];
 			}
 
-			// Find unread indices
-			const unreadIndices = await this.page.evaluate(() => {
-				const items = Array.from(document.querySelectorAll('.msg-conversation-listitem, .msg-conversation-card'));
-				return items.map((item, index) => {
-					// Check for badged elements usually indicating unread
-					const badge = item.querySelector('.notification-badge--show, .msg-conversation-card__unread-count');
-					return badge ? index : -1;
-				}).filter(i => i !== -1);
-			});
+			// Get visible items count
+			const count = await this.page.$$eval(listSelector, els => els.length);
+			this.logger.log(`Found ${count} conversations after filtering.`);
 
-			this.logger.log(`Found ${unreadIndices.length} unread conversations.`);
-
-			if (unreadIndices.length === 0) {
-				await this.page.screenshot({ path: 'debug-scraping-msgs-0-unread.png' });
-				return [];
-			}
-
-			// Apply Limit
-			const indicesToProcess = unreadIndices.slice(0, limit);
-			this.logger.log(`Processing ${indicesToProcess.length} conversations (User Limit: ${limit}).`);
+			// Iterate through ALL found items until we fill the limit
+			this.logger.log(`Scanning conversations to find ${limit} valid messages...`);
 
 			const results: any[] = [];
 
-			for (const index of indicesToProcess) {
-				// Re-fetch items to avoid stale elements
+			// Use simple for loop to scan all potential items
+			for (let index = 0; index < count; index++) {
+				if (results.length >= limit) {
+					this.logger.log(`Limit (${limit}) reached. Stopping scan.`);
+					break;
+				}
+
+				// Re-fetch items
 				const items = await this.page.$$(listSelector);
 				if (!items[index]) continue;
 
+				// Scroll item into view
+				await items[index].evaluate(el => el.scrollIntoView({ block: 'center' }));
+				await this.randomDelay(500, 1000);
+
+				this.logger.log(`Checking conversation at index ${index}...`);
 				await items[index].click();
 				await this.randomDelay(2000, 4000);
 
-				const threadUrl = this.page.url(); // Capture URL
+				const threadUrl = this.page.url();
 
-				// Scrape messages with metadata
+				// CHECK IF REPLYABLE (User Requirement: Skip Sponsored/InMail without input)
+				const inputSelector = '.msg-form__contenteditable';
+				const isReplyable = await this.page.evaluate((sel) => !!document.querySelector(sel), inputSelector);
+
+				if (!isReplyable) {
+					// Detect if it is indeed Sponsored to give better log
+					const isSponsored = await this.page.evaluate(() => {
+						return document.body.innerText.includes('Sponsorisé') || document.body.innerText.includes('Sponsored');
+					});
+					this.logger.warn(`[Skip] Conversation ${index} (${threadUrl}) is not replyable (Sponsored: ${isSponsored}).`);
+					continue;
+				}
+
+				// Scrape messages
 				const fullHistory = await this.page.evaluate(() => {
-					// Use specific message items
 					const elements = Array.from(document.querySelectorAll('.msg-s-event-listitem'));
-
 					return elements.map(el => {
 						const body = el.querySelector('.msg-s-event-listitem__body');
-						let text = body?.textContent || '';
 
-						text = text
-							.replace(/[\n\r]+/g, ' ')
-							.replace(/\s+/g, ' ')
+						let textContent = '';
+						if (body) {
+							const clone = body.cloneNode(true) as HTMLElement;
+							clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+							textContent = clone.innerText || clone.textContent || '';
+						} else {
+							const cloneEl = el.cloneNode(true) as HTMLElement;
+							const time = cloneEl.querySelector('time');
+							if (time) time.remove();
+							const meta = cloneEl.querySelector('.msg-s-message-group__meta');
+							if (meta) meta.remove();
+							// Remove profile link text duplication if present
+							const profile = cloneEl.querySelector('.msg-s-message-group__profile-link');
+							if (profile) profile.remove();
+
+							cloneEl.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+							textContent = cloneEl.innerText || cloneEl.textContent || '';
+						}
+
+						textContent = textContent
 							.replace('Open emoji keyboard', '')
 							.replace('Voir la traduction', '')
+							.replace(/[\r\n]+/g, '\n')
 							.trim();
 
-						if (!text) return null;
-
-						// Determine sender
 						const isMine = !el.classList.contains('msg-s-event-listitem--other');
 						const sender = isMine ? 'user' : 'contact';
-
-						// Attempt to get time (often in a time element or aria-label)
-						// LinkedIn structure varies, often <time class="msg-s-message-group__timestamp">
 						const timeEl = el.querySelector('time');
 						const createdAt = timeEl ? timeEl.getAttribute('datetime') || new Date().toISOString() : new Date().toISOString();
 
-						return {
-							text,
-							sender,
-							createdAt,
-							metadata: { isLlmGenerated: false }
-						};
+						if (!textContent) return null;
+
+						return { text: textContent, sender, createdAt, metadata: { isLlmGenerated: false } };
 					}).filter(t => t !== null);
 				});
+
+				this.logger.log(`[Scrape] Scraped ${fullHistory.length} messages from ${threadUrl}`);
 
 				const partnerName = await this.page.evaluate(() => {
 					const header = document.querySelector('.msg-entity-lockup__entity-title');
 					return header ? header.textContent?.trim() : 'Unknown';
 				}) || 'Unknown';
 
-				const unreadMessages = fullHistory.slice(-5); // Increase context slightly to 5? User said 20 msgs in logic, probably meaning 20 Convs. Keep 3-5.
+				const unreadMessages = fullHistory.slice(-5);
 				const history = fullHistory.slice(0, -5);
 
 				results.push({
-					conversationId: `conv-unread-${index}`, // Temporary ID, we will try to match by URL/Name later
+					conversationId: `conv-unread-${index}`,
 					partnerName,
 					threadUrl,
 					unreadMessages,
@@ -515,14 +565,12 @@ export class LinkedinService implements OnModuleDestroy {
 			const sendSelector = '.msg-form__send-button';
 			await this.page.waitForSelector(sendSelector, { visible: true, timeout: 5000 });
 			await this.page.click(sendSelector);
-			await this.randomDelay(2000, 3000);
+			await this.randomDelay(1000, 3000);
 
-			// Verify if sent (message appears in list) - optional Check
 			this.logger.log('Message sent successfully.');
 			return true;
-
 		} catch (error) {
-			this.logger.error(`Failed to reply to conversation ${threadUrl}`, error);
+			this.logger.error('Failed to reply to conversation', error.stack);
 			return false;
 		}
 	}

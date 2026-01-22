@@ -14,14 +14,12 @@ async function main() {
 	const deletedConversations = await prisma.conversation.deleteMany({});
 	console.log(`Deleted ${deletedConversations.count} Conversations.`);
 
-	const deletedContacts = await prisma.contact.deleteMany({});
-	console.log(`Deleted ${deletedContacts.count} Contacts.`);
+	console.log('Deleted contacts.');
 
-	// Reset contextSynthesis as requested (FORCE FRESH START)
-	await prisma.linkedinAccount.updateMany({
-		data: { contextSynthesis: null }
-	});
-	console.log('Reset contextSynthesis to null for all accounts.');
+	// Reset contextSynthesis REMOVED as per user request (Preserve Persona)
+	// await prisma.linkedinAccount.updateMany({ data: { contextSynthesis: null } });
+
+	console.log('Cleanup complete (History cleared, Context preserved).');
 
 	console.log('Cleanup complete.');
 }

@@ -12,7 +12,7 @@ export class OrchestratorService {
 	private isProcessing = false;
 
 	// TEMPORARY SAFETY RULES
-	private readonly DRY_RUN_MODE = true; // Set to false to actually send messages
+	private readonly DRY_RUN_MODE = false; // Set to false to actually send messages
 	private readonly MAX_UNREAD_LIMIT = 1; // Set to 20 when confident
 
 	constructor(
@@ -328,6 +328,13 @@ export class OrchestratorService {
 					contextSynthesis,
 					history
 				);
+
+				// LOG THE GENERATED CONTENT FOR USER VISIBILITY
+				if (response.suggested_response) {
+					this.logger.log(`\n=== [LLM PROPOSED REPLY] ===\n"${response.suggested_response}"\n============================\nReasoning: ${response.reasoning}`);
+				} else {
+					this.logger.log(`\n=== [LLM DECISION: NO REPLY] ===\nReasoning: ${response.reasoning}\n================================`);
+				}
 
 				// Create Action
 				await this.prisma.llmAction.create({

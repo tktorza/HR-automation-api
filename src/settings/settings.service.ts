@@ -22,19 +22,19 @@ export class SettingsService {
 
 	async updateSettings(tenantId: string, data: any) {
 		// Only allow specific fields
-		const { googleAiApiKey, llmProviderPreference, confidenceThreshold } = data;
+		const { googleAiApiKey, anthropicAiApiKey, confidenceThreshold } = data;
 
 		return this.prisma.onboardingConfig.upsert({
 			where: { tenantId },
 			update: {
 				googleAiApiKey,
-				llmProviderPreference,
+				anthropicAiApiKey,
 				confidenceThreshold: confidenceThreshold ? parseInt(confidenceThreshold) : undefined,
 			},
 			create: {
 				tenantId,
 				googleAiApiKey,
-				llmProviderPreference,
+				anthropicAiApiKey,
 				confidenceThreshold: confidenceThreshold ? parseInt(confidenceThreshold) : 70,
 			},
 		});

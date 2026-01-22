@@ -32,11 +32,18 @@ export class NotificationsGateway
 	}
 
 	// Methods to emit events
+	// Methods to emit events
 	emitWorkflowUpdate(tenantId: string, status: string, message?: string) {
-		this.server.emit('workflow_update', { tenantId, status, message });
+		if (this.server) {
+			this.server.emit('workflow_update', { tenantId, status, message });
+		} else {
+			this.logger.warn(`Cannot emit workflow_update (no server instance): ${status} - ${message}`);
+		}
 	}
 
 	emitNewMessages(tenantId: string, count: number) {
-		this.server.emit('new_messages', { tenantId, count });
+		if (this.server) {
+			this.server.emit('new_messages', { tenantId, count });
+		}
 	}
 }

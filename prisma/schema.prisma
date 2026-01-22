@@ -71,6 +71,7 @@ model LinkedinAccount {
   lastScrapeAt           DateTime? @map("last_scrape_at") @db.Timestamptz
   sessionExpiresAt       DateTime? @map("session_expires_at") @db.Timestamptz
   isActive               Boolean   @default(true) @map("is_active")
+  contextSynthesis       String?   @map("context_synthesis")
   scrapeFrequencyMinutes Int       @default(10) @map("scrape_frequency_minutes")
   createdAt              DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt              DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
@@ -226,7 +227,7 @@ model OnboardingConfig {
   
   // Hybrid LLM Config
   googleAiApiKey        String?  @map("google_ai_api_key")
-  llmProviderPreference String?  @default("auto") @map("llm_provider_preference") // auto, gemini-only, claude-only
+  anthropicAiApiKey     String?  @map("anthropic_api_key") // NEW: Client-side key for fallback
 
   createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

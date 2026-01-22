@@ -11,8 +11,9 @@ export class GeminiProvider {
 
 	async generateResponse(systemPrompt: string, userMessage: string): Promise<any> {
 		try {
+			this.logger.debug(`Gemini Prompt: ${systemPrompt}\n${userMessage}`);
 			const model = this.client.getGenerativeModel({
-				model: 'gemini-2.0-flash-exp',
+				model: 'gemini-1.5-flash',
 				generationConfig: {
 					responseMimeType: 'application/json',
 					temperature: 0.7,

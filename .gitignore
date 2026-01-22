@@ -45,3 +45,4 @@ lerna-debug.log*
 
 # Browser Persistence
 /browser-data
+.aider*

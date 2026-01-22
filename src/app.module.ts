@@ -14,6 +14,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { OrchestratorModule } from './orchestrator/orchestrator.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { SettingsModule } from './settings/settings.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
 	imports: [
@@ -30,6 +31,7 @@ import { SettingsModule } from './settings/settings.module';
 		OrchestratorModule,
 		ConversationsModule,
 		SettingsModule,
+		AnalyticsModule,
 	],
 	controllers: [AppController],
 	providers: [AppService],

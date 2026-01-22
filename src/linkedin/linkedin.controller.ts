@@ -31,7 +31,14 @@ export class LinkedinController {
 
 	@Post()
 	async createAccount(@Body() dto: CreateAccountDto, @Request() req: any) {
-		return this.linkedinService.addAccount(req.user.tenantId, dto.email, dto.password);
+		try {
+			return await this.linkedinService.addAccount(req.user.tenantId, dto.email, dto.password);
+		} catch (error) {
+			if (error.message === 'DUPLICATE_ACCOUNT') {
+				throw new BadRequestException('LinkedIn account with this email already exists.');
+			}
+			throw new BadRequestException('Failed to create LinkedIn account. Please check your inputs.');
+		}
 	}
 
 	@Post('2fa')

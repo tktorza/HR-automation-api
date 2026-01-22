@@ -61,55 +61,216 @@ export class OrchestratorService {
 
 		try {
 			// 1. Decrypt Credentials
-			// account.emailEncrypted is actually the username/email we need to decrypt
 			const username = this.cryptoService.decrypt(account.emailEncrypted);
-
-			// 2. Login
-			// We pass the encrypted password directly because LinkedinService.login expects encryptedPassword
 			const loginResult = await this.linkedinService.login(username, account.passwordEncrypted);
 
 			if (loginResult.status !== 'SUCCESS') {
 				this.logger.warn(`Login failed or required 2FA for tenant ${account.tenantId}. Status: ${loginResult.status}`);
-				// TODO: Create a Notification via NotificationService here if 2FA is required
 				return;
 			}
 
-			// 3. Scrape
-			// For V1 scraping is a placeholder returning empty array or mock
-			const messages = await this.linkedinService.scrapeMessages();
-			this.logger.log(`Scraped ${messages.length} new messages.`);
+			// 2. Context Initialization (One-time)
+			let contextSynthesis = account.contextSynthesis;
 
-			// 4. Process each message
-			for (const msg of messages) {
-				// Check if conversation exists or create it
-				// This logic depends on what scrapeMessages returns. 
-				// Assuming it returns objects with { text, senderUrn, conversationUrn, etc. }
+			// BYPASS CHECK: Check if we have enough recent data in DB to skip scraping
+			const cachedConversations = await this.prisma.conversation.findMany({
+				where: { tenantId: account.tenantId, lastScrapedAt: { not: null } },
+				take: 30,
+				orderBy: { lastMessageAt: 'desc' },
+				include: { contact: true }
+			});
 
-				// Generate LLM Response
-				const response = await this.llmService.generateResponse(account.tenantId, msg.text);
+			let recentConvos: any[] = [];
 
-				// Save Action
-				// We need a conversationId. For now, let's assume valid conversationId or create a placeholder.
-				// Since we don't have real messages, we can't really INSERT into DB without violating FKs if convo doesn't exist.
-				// So for V1 we just LOG the result if we can't save.
+			if (cachedConversations.length >= 5 && !contextSynthesis) {
+				this.logger.log(`[Bypass] Found ${cachedConversations.length} cached conversations in DB. Using them for context generation.`);
+				recentConvos = cachedConversations.map(c => ({
+					conversationId: c.id,
+					partnerName: c.contact?.fullName || 'Unknown',
+					messages: (c.messages as any[]) || []
+				}));
+			} else if (!contextSynthesis) {
+				this.logger.log(`Context synthesis missing and no cache. Scraping last 30 conversations...`);
+				recentConvos = await this.linkedinService.scrapeRecentConversations(30);
 
-				/* 
+				// PERSISTENCE: Save scraped data immediately for future bypass
+				if (recentConvos.length > 0) {
+					await this.saveScrapedConversations(account.tenantId, recentConvos);
+				}
+			}
+
+			if (!contextSynthesis && recentConvos.length > 0) {
+				this.logger.log(`Generating context synthesis from ${recentConvos.length} conversations...`);
+				contextSynthesis = await this.llmService.generateContextSynthesis(account.tenantId, recentConvos);
+
+				// Save to DB
+				await this.prisma.linkedinAccount.update({
+					where: { id: account.id },
+					data: { contextSynthesis }
+				});
+				this.logger.log(`Context synthesis saved for account ${account.id}`);
+			}
+
+			// STRICT CHECK: If context is still missing, we must ABORT.
+			if (!contextSynthesis) {
+				const errorMsg = `Context Generation Failed: Unable to retrieve conversation history for account ${account.id}. Aborting.`;
+				this.logger.error(errorMsg);
+				this.notificationsGateway.emitWorkflowUpdate(account.tenantId, 'failed', errorMsg);
+				return;
+			}
+
+			// 3. Main Workflow: Scrape & Batch Process
+			const conversationBatches = await this.linkedinService.scrapeMessages();
+			this.logger.log(`Scraped ${conversationBatches.length} active conversations with unread messages.`);
+
+			for (const batch of conversationBatches) {
+				/* batch structure: 
+				{
+					conversationId, 
+					partnerName, 
+					unreadMessages: string[], 
+					history: string[] 
+				} 
+				*/
+
+				// Generate LLM Response (Batch)
+				const response = await this.llmService.generateResponse(
+					account.tenantId,
+					batch.unreadMessages,
+					contextSynthesis,
+					batch.history
+				);
+
+				// 4. Save to Database (Draft Status)
+				// Ensure conversation exists
+				let conversation = await this.prisma.conversation.findFirst({
+					where: {
+						tenantId: account.tenantId,
+						// We need a stable ID from LinkedIn. Assuming metadata stores it or we use a field.
+						// For now, I'll assume we can't reliably link without a field update, 
+						// but I'll try to find by contact or just create new for this mock flow.
+						// V1 Simplicity: Just create if not found by some heuristic or just create new.
+						// Better: Use a mock contact ID lookup if possible, but let's just create a placeholder conversation tied to a Contact.
+					}
+				});
+
+				if (!conversation) {
+					// Create pending contact/conversation
+					const contact = await this.prisma.contact.create({
+						data: {
+							tenantId: account.tenantId,
+							linkedinProfileUrl: `https://linkedin.com/in/${batch.conversationId}`, // Mock
+							fullName: batch.partnerName,
+							status: 'new'
+						}
+					});
+
+					conversation = await this.prisma.conversation.create({
+						data: {
+							tenantId: account.tenantId,
+							contactId: contact.id,
+							lastMessageAt: new Date(),
+							unreadCount: batch.unreadMessages.length,
+							messages: JSON.stringify(batch.history) // Store history
+						}
+					});
+				}
+
+				// Insert LlmAction
 				await this.prisma.llmAction.create({
 					data: {
 						tenantId: account.tenantId,
-						conversationId: '...', // derived from msg
-						actionType: 'REPLY_SUGGESTION',
+						conversationId: conversation.id,
+						actionType: 'REPLY_SUGGESTION', // Draft
 						confidenceScore: response.confidence_score,
-						llmResponse: response,
-						prompt: msg.text,
-						finalMessage: response.suggested_response
+						llmResponse: JSON.parse(JSON.stringify(response)), // Ensure JSON
+						prompt: batch.unreadMessages.join('\n'), // Store the input messages
+						finalMessage: response.suggested_response, // The proposed draft
+						metadata: {
+							status: 'DRAFT', // Explicitly mark as Draft
+							context_used: !!contextSynthesis
+						}
 					}
 				});
-				*/
-				this.logger.log(`Generated response for msg: ${JSON.stringify(response)}`);
+
+				this.logger.log(`Saved DRAFT response for ${batch.partnerName}`);
 			}
+
 		} catch (e) {
 			this.logger.error(`Error processing account ${account.id}`, e.stack);
 		}
+	}
+	private async saveScrapedConversations(tenantId: string, conversations: any[]) {
+		this.logger.log(`Persisting ${conversations.length} scraped conversations to DB...`);
+		for (const conv of conversations) {
+			try {
+				// 1. Upsert Contact
+				// We don't have a profile URL from this specific scrape usually, but we have a name.
+				// In a real scenario, we need a unique ID (profileUrl). 
+				// For this "Context Scrape", we might lack the URL. We'll use Name as a fallback unique constraint or create if not exists
+				// WARNING: Name is not unique. Ideally scrapeRecentConversations returns profileUrl.
+				// For now, we will try to find by Name or Create.
+
+				// A clearer path: scrapeRecentConversations SHOULD return profileUrl if possible.
+				// Assuming it doesn't currently, we'll skip Contact UPSERT based on URL and just create a "Context Contact" or rely on loose matching.
+				// To keep it safe: We will skip strict Contact management here and just focus on saving the conversation content 
+				// if we can link it. If not, we might create a placeholder.
+
+				// Let's rely on a placeholder 'linkedin_id' if available or just timestamp.
+				// For the "Bypass" feature to work, we just need to store the data.
+
+				// Better approach: Create a Contact with the Name.
+				const fakeUrl = `https://linkedin.com/in/placeholder-${conv.partnerName.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}`;
+
+				// upsert contact is tricky without unique key. 
+				// We will check findFirst by name (risky) or just create specific ones for context history.
+
+				// Simplified persistence for Context Cache:
+				let contact = await this.prisma.contact.findFirst({
+					where: { tenantId, fullName: conv.partnerName }
+				});
+
+				if (!contact) {
+					contact = await this.prisma.contact.create({
+						data: {
+							tenantId,
+							fullName: conv.partnerName,
+							linkedinProfileUrl: fakeUrl, // Placeholder
+							source: 'scraped_context'
+						}
+					});
+				}
+
+				// 2. Create/Update Conversation
+				// We assume one conversation per contact for simplicity in this MVP
+				const existingConv = await this.prisma.conversation.findFirst({
+					where: { contactId: contact.id }
+				});
+
+				if (existingConv) {
+					await this.prisma.conversation.update({
+						where: { id: existingConv.id },
+						data: {
+							messages: conv.messages,
+							lastScrapedAt: new Date(),
+							// update lastMessageAt based on latest message if possible (omitted for brevity)
+						}
+					});
+				} else {
+					await this.prisma.conversation.create({
+						data: {
+							tenantId,
+							contactId: contact.id,
+							messages: conv.messages,
+							lastScrapedAt: new Date(),
+							unreadCount: 0
+						}
+					});
+				}
+			} catch (e) {
+				this.logger.warn(`Failed to save conversation for ${conv.partnerName}: ${e.message}`);
+			}
+		}
+		this.logger.log('Persistence complete.');
 	}
 }

@@ -40,12 +40,20 @@ export class LlmService implements OnModuleInit {
 
 		// 1. Prepare Data
 		// Format conversations into a readable string for the LLM
-		const conversationText = conversations.map((c, i) => `
+		const conversationText = conversations.map((c, i) => {
+			const msgs = Array.isArray(c.messages) ? c.messages : [];
+			const formattedMsgs = msgs.map((m: any) => {
+				if (typeof m === 'string') return `Unknown: ${m}`;
+				return `${m.sender || 'Unknown'}: ${m.text || ''}`;
+			}).join('\n');
+
+			return `
 		[Conversation ${i + 1}]
 		Partner: ${c.partnerName}
 		Messages:
-		${c.messages.map((m: any) => `${m.sender}: ${m.text}`).join('\n')}
-		`).join('\n\n');
+		${formattedMsgs}
+		`;
+		}).join('\n\n');
 
 		const prompt = `${CONTEXT_SYNTHESIS_PROMPT}\n\nDATA:\n${conversationText}`;
 
@@ -97,9 +105,9 @@ export class LlmService implements OnModuleInit {
 	// UPDATED: Handle Batched Messages + Context
 	async generateResponse(
 		tenantId: string,
-		messages: string[],
+		messages: any[], // Now objects
 		contextSynthesis?: string,
-		history: string[] = []
+		history: any[] = [] // Now objects
 	): Promise<LLMResponse> {
 		await this.checkQuota(tenantId);
 
@@ -122,13 +130,23 @@ export class LlmService implements OnModuleInit {
 			.replace('{{CONTEXT_SYNTHESIS}}', contextSynthesis || 'No specific style context available. Be professional and polite.')
 			.replace('{{CALENDAR_LINK}}', calendarLink);
 
+		// Format history and unread messages from Objects to Strings
+		const formatMsg = (m: any) => {
+			if (typeof m === 'string') return m;
+			// Use sender: text format
+			return `${m.sender || 'Unknown'}: ${m.text}`;
+		};
+
+		const historyText = history.map(formatMsg).join('\n');
+		const unreadText = messages.map(formatMsg).join('\n');
+
 		// 3. User Prompt construction
 		const userPrompt = `
 		HISTORY:
-		${history.join('\n')}
+		${historyText}
 		
 		UNREAD MESSAGES (Reply to these):
-		${messages.map(m => `- ${m}`).join('\n')}
+		${unreadText}
 		`;
 
 		let response: LLMResponse;

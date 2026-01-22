@@ -315,18 +315,17 @@ export class LinkedinService implements OnModuleDestroy {
 				}
 				await this.randomDelay(1500, 3000);
 
+				const threadUrl = this.page.url(); // Capture Thread URL for context conversations too
+
 				// Extract Content
 				const history = await this.page.evaluate(() => {
 					// Select only message bodies (avoid container)
-					const elements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
+					const elements = Array.from(document.querySelectorAll('.msg-s-event-listitem'));
 
 					return elements.map(el => {
-						const parent = el.closest('.msg-s-event-listitem');
-						const isMine = parent?.classList.contains('msg-s-event-listitem--other') === false;
-						const sender = isMine ? 'Me' : 'Partner';
+						const body = el.querySelector('.msg-s-event-listitem__body');
+						let text = body?.textContent || '';
 
-						// CLEANING: Get text but filter out common noise
-						let text = el.textContent || '';
 						text = text
 							.replace(/[\n\r]+/g, ' ')
 							.replace(/\s+/g, ' ')
@@ -334,8 +333,17 @@ export class LinkedinService implements OnModuleDestroy {
 							.replace('Voir la traduction', '')
 							.trim();
 
-						return { sender, text };
-					}).filter(msg => msg.text.length > 0);
+						if (!text) return null;
+
+						const isMine = !el.classList.contains('msg-s-event-listitem--other');
+						const sender = isMine ? 'user' : 'contact'; // Standardized values
+
+						// Attempt to get time
+						const timeEl = el.querySelector('time');
+						const createdAt = timeEl ? timeEl.getAttribute('datetime') || new Date().toISOString() : new Date().toISOString();
+
+						return { text, sender, createdAt, metadata: { isLlmGenerated: false } };
+					}).filter(msg => msg !== null);
 				});
 
 				const partnerName = await this.page.evaluate(() => {
@@ -348,6 +356,7 @@ export class LinkedinService implements OnModuleDestroy {
 				conversationsData.push({
 					conversationId: `conv-${i}`,
 					partnerName,
+					threadUrl, // Add to result
 					messages: history
 				});
 			}
@@ -360,11 +369,11 @@ export class LinkedinService implements OnModuleDestroy {
 		}
 	}
 
-	async scrapeMessages(): Promise<any[]> {
+	async scrapeMessages(limit: number = 20): Promise<any[]> {
 		if (!this.page) return [];
 
 		try {
-			this.logger.log('Navigating to Messaging to check unread...');
+			this.logger.log(`Navigating to Messaging to check unread (Limit: ${limit})...`);
 			await this.page.goto('https://www.linkedin.com/messaging/?filter=unread', { waitUntil: 'domcontentloaded', timeout: 20000 });
 			await this.randomDelay(2000, 4000);
 
@@ -377,7 +386,7 @@ export class LinkedinService implements OnModuleDestroy {
 				return [];
 			}
 
-			// Find unread
+			// Find unread indices
 			const unreadIndices = await this.page.evaluate(() => {
 				const items = Array.from(document.querySelectorAll('.msg-conversation-listitem, .msg-conversation-card'));
 				return items.map((item, index) => {
@@ -391,31 +400,59 @@ export class LinkedinService implements OnModuleDestroy {
 
 			if (unreadIndices.length === 0) {
 				await this.page.screenshot({ path: 'debug-scraping-msgs-0-unread.png' });
+				return [];
 			}
+
+			// Apply Limit
+			const indicesToProcess = unreadIndices.slice(0, limit);
+			this.logger.log(`Processing ${indicesToProcess.length} conversations (User Limit: ${limit}).`);
 
 			const results: any[] = [];
 
-			for (const index of unreadIndices) {
+			for (const index of indicesToProcess) {
+				// Re-fetch items to avoid stale elements
 				const items = await this.page.$$(listSelector);
 				if (!items[index]) continue;
 
 				await items[index].click();
 				await this.randomDelay(2000, 4000);
 
-				// Scrape messages
+				const threadUrl = this.page.url(); // Capture URL
+
+				// Scrape messages with metadata
 				const fullHistory = await this.page.evaluate(() => {
-					const elements = Array.from(document.querySelectorAll('.msg-s-event-listitem__body'));
+					// Use specific message items
+					const elements = Array.from(document.querySelectorAll('.msg-s-event-listitem'));
 
 					return elements.map(el => {
-						let text = el.textContent || '';
+						const body = el.querySelector('.msg-s-event-listitem__body');
+						let text = body?.textContent || '';
+
 						text = text
 							.replace(/[\n\r]+/g, ' ')
 							.replace(/\s+/g, ' ')
 							.replace('Open emoji keyboard', '')
 							.replace('Voir la traduction', '')
 							.trim();
-						return text;
-					}).filter(t => t.length > 0);
+
+						if (!text) return null;
+
+						// Determine sender
+						const isMine = !el.classList.contains('msg-s-event-listitem--other');
+						const sender = isMine ? 'user' : 'contact';
+
+						// Attempt to get time (often in a time element or aria-label)
+						// LinkedIn structure varies, often <time class="msg-s-message-group__timestamp">
+						const timeEl = el.querySelector('time');
+						const createdAt = timeEl ? timeEl.getAttribute('datetime') || new Date().toISOString() : new Date().toISOString();
+
+						return {
+							text,
+							sender,
+							createdAt,
+							metadata: { isLlmGenerated: false }
+						};
+					}).filter(t => t !== null);
 				});
 
 				const partnerName = await this.page.evaluate(() => {
@@ -423,14 +460,15 @@ export class LinkedinService implements OnModuleDestroy {
 					return header ? header.textContent?.trim() : 'Unknown';
 				}) || 'Unknown';
 
-				const unreadMessages = fullHistory.slice(-3);
-				const history = fullHistory.slice(0, -3);
+				const unreadMessages = fullHistory.slice(-5); // Increase context slightly to 5? User said 20 msgs in logic, probably meaning 20 Convs. Keep 3-5.
+				const history = fullHistory.slice(0, -5);
 
 				results.push({
-					conversationId: `conv-unread-${index}`,
+					conversationId: `conv-unread-${index}`, // Temporary ID, we will try to match by URL/Name later
 					partnerName,
-					unreadMessages: unreadMessages,
-					history: history
+					threadUrl,
+					unreadMessages,
+					history
 				});
 			}
 
@@ -440,6 +478,52 @@ export class LinkedinService implements OnModuleDestroy {
 			this.logger.error('Scraping messages failed', error.stack);
 			if (this.page) await this.page.screenshot({ path: 'debug-scraping-msgs-error.png' });
 			return [];
+		}
+	}
+	async replyToConversation(threadUrl: string, message: string, dryRun: boolean = true): Promise<boolean> {
+		if (!this.page) return false;
+
+		try {
+			this.logger.log(`Navigating to conversation URL: ${threadUrl}`);
+			await this.page.goto(threadUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+			await this.randomDelay(2000, 4000);
+
+			// Check if we are in the conversation (message input exists)
+			const inputSelector = '.msg-form__contenteditable'; // Common selector for LinkedIn messages
+			try {
+				await this.page.waitForSelector(inputSelector, { timeout: 10000 });
+			} catch (e) {
+				this.logger.warn(`Message input not found for ${threadUrl}. Might not be connected or UI changed.`);
+				return false;
+			}
+
+			// Type message (Simulate human typing)
+			this.logger.log('Typing response...');
+			await this.page.click(inputSelector);
+			await this.page.type(inputSelector, message, { delay: 100 });
+			await this.randomDelay(1000, 2000);
+
+			if (dryRun) {
+				this.logger.log(`[DRY RUN] Would have sent message: "${message}"`);
+				this.logger.log('[DRY RUN] Skipping click send.');
+				return true;
+			}
+
+			// Click Send
+			this.logger.log('Clicking send...');
+			// Usually there is a send button, sometimes hidden until typing.
+			const sendSelector = '.msg-form__send-button';
+			await this.page.waitForSelector(sendSelector, { visible: true, timeout: 5000 });
+			await this.page.click(sendSelector);
+			await this.randomDelay(2000, 3000);
+
+			// Verify if sent (message appears in list) - optional Check
+			this.logger.log('Message sent successfully.');
+			return true;
+
+		} catch (error) {
+			this.logger.error(`Failed to reply to conversation ${threadUrl}`, error);
+			return false;
 		}
 	}
 

@@ -125,6 +125,11 @@ model Conversation {
   lastMessageAt DateTime? @map("last_message_at") @db.Timestamptz
   lastScrapedAt DateTime? @map("last_scraped_at") @db.Timestamptz
   unreadCount   Int       @default(0) @map("unread_count")
+  
+  // New fields for robust reply workflow
+  threadUrl        String?   @map("thread_url")
+  processingStatus String    @default("IDLE") @map("processing_status") @db.VarChar(50) // IDLE, PENDING_LLM, PENDING_REPLY, COMPLETED
+
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt     DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 

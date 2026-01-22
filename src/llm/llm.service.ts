@@ -99,7 +99,8 @@ export class LlmService implements OnModuleInit {
 		if (typeof result === 'string') {
 			return result;
 		}
-		return result.suggested_response || result.reasoning || null;
+		// Gemini provider forces JSON, so we handle the probable keys
+		return result.analysis || result.suggested_response || result.reasoning || JSON.stringify(result);
 	}
 
 	// UPDATED: Handle Batched Messages + Context

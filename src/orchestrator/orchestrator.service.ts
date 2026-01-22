@@ -167,12 +167,15 @@ export class OrchestratorService {
 			// =========================================================
 			// PHASE 1: SCRAPE & PERSIST (Status: PENDING_LLM)
 			// =========================================================
-			this.logger.log('--- PHASE 1: SCRAPE & PERSIST ---');
+			// =========================================================
+			// PHASE 1: SCRAPE & PERSIST (Status: PENDING_LLM)
+			// =========================================================
+			this.logger.log('--- PHASE 1: SCRAPE & PERSIST (SYNC STRATEGY) ---');
+			// Scrape returns FULL HISTORY now as 'messages'
 			const scrapedBatches = await this.linkedinService.scrapeMessages(this.MAX_UNREAD_LIMIT);
 
 			for (const batch of scrapedBatches) {
 				// Upsert Contact
-				// Use partnerName as key for now (Simple MVP)
 				let contact = await this.prisma.contact.findFirst({
 					where: { tenantId: account.tenantId, fullName: batch.partnerName }
 				});
@@ -182,36 +185,101 @@ export class OrchestratorService {
 						data: {
 							tenantId: account.tenantId,
 							fullName: batch.partnerName,
-							linkedinProfileUrl: `https://linkedin.com/in/placeholder-${Date.now()}`, // Placeholder
+							linkedinProfileUrl: `https://linkedin.com/in/placeholder-${Date.now()}`,
 							source: 'scraped_inbound'
 						}
 					});
 				}
 
-				// Upsert Conversation
-				const conversation = await this.prisma.conversation.findFirst({
+				// Fetch Existing Conversation
+				const existingConv = await this.prisma.conversation.findFirst({
 					where: { contactId: contact.id }
 				});
 
-				if (conversation) {
+				let finalMessages: any[] = [];
+				let newUnreadMessages: any[] = [];
+				// The Scraper returns 'messages' as full visible history
+				const scrapedHistory = (batch.messages || []) as any[];
+
+				if (existingConv) {
+					// --- EXISTING CONVERSATION: SYNC/DIFF ---
+					const dbMessages = (existingConv.messages as any[]) || [];
+
+					if (dbMessages.length === 0) {
+						// Fallback: If DB is empty for some reason, take full scrape
+						newUnreadMessages = scrapedHistory;
+						finalMessages = scrapedHistory;
+					} else {
+						// Find the last DB message in the scraped history to sync
+						const lastDbMsg = dbMessages[dbMessages.length - 1];
+
+						// Try to find matching index in scraped history (by content + sender + time approximation if needed)
+						// Simple check: Exact content match of last message
+						const matchIndex = scrapedHistory.findIndex(m =>
+							m.text === lastDbMsg.text && m.sender === lastDbMsg.sender
+						);
+
+						if (matchIndex !== -1) {
+							// We found the overlap point. 
+							// New messages are everything AFTER this index.
+							newUnreadMessages = scrapedHistory.slice(matchIndex + 1);
+
+							// Reconstruct full history: DB History + New Parts
+							// (We trust DB history more as it might be longer than what's visible on screen)
+							finalMessages = [...dbMessages, ...newUnreadMessages];
+						} else {
+							// GAP or NO MATCH (e.g. older messages scrolled out of view, or slight diff)
+							// Safety Fallback: Take the whole scraped history as authority if we can't sync?
+							// OR: Just assume everything scraped that is "newer" is new?
+							// Let's assume Scraper is 'Current State'. If we can't match, we might duplicate or lose.
+							// Better Safety: If last DB message not found, maybe just append ALL scraped? No, duplicates.
+							// Strategy: Use Scraped History as the new Source of truth if sync fails, but warn.
+							this.logger.warn(`Could not sync DB history with Scraped history for ${batch.partnerName}. Using Scraped as new truth.`);
+							finalMessages = scrapedHistory;
+							// Unread is harder to define here. Let's assume all are "new context" but maybe not all unread.
+							// Logic: If user replies, usually unread is after user reply.
+							// Find last user message in the new set
+							const lastUserIdx = finalMessages.map(m => m.sender).lastIndexOf('user');
+							if (lastUserIdx !== -1) {
+								newUnreadMessages = finalMessages.slice(lastUserIdx + 1);
+							} else {
+								newUnreadMessages = finalMessages;
+							}
+						}
+					}
+
+					if (newUnreadMessages.length === 0) {
+						this.logger.log(`No new messages to sync for ${batch.partnerName}.`);
+						continue;
+					}
+
+					// Update DB
 					await this.prisma.conversation.update({
-						where: { id: conversation.id },
+						where: { id: existingConv.id },
 						data: {
-							messages: batch.history.concat(batch.unreadMessages), // Update full history
-							unreadCount: batch.unreadMessages.length,
+							messages: finalMessages,
+							unreadCount: newUnreadMessages.length,
 							lastMessageAt: new Date(),
 							lastScrapedAt: new Date(),
 							threadUrl: batch.threadUrl,
-							processingStatus: 'PENDING_LLM' // Mark for processing
+							processingStatus: 'PENDING_LLM'
 						}
 					});
+
 				} else {
+					// --- NEW CONVERSATION (SCENARIO A) ---
+					// User Rule: "If No DB History -> Get ALL messages from him and me"
+
+					// Full Scraped IS the history
+					finalMessages = scrapedHistory;
+					newUnreadMessages = scrapedHistory; // Treat ALL as "Actionable/Unread" for Trigger purposes
+
 					await this.prisma.conversation.create({
 						data: {
 							tenantId: account.tenantId,
 							contactId: contact.id,
-							messages: batch.history.concat(batch.unreadMessages),
-							unreadCount: batch.unreadMessages.length,
+							messages: finalMessages,
+							unreadCount: newUnreadMessages.length,
 							lastMessageAt: new Date(),
 							lastScrapedAt: new Date(),
 							threadUrl: batch.threadUrl,
@@ -219,7 +287,7 @@ export class OrchestratorService {
 						}
 					});
 				}
-				this.logger.log(`Persisted URL ${batch.threadUrl} with status PENDING_LLM`);
+				this.logger.log(`Persisted ${batch.partnerName} (New: ${newUnreadMessages.length}). Status -> PENDING_LLM`);
 			}
 
 			// =========================================================
@@ -231,12 +299,28 @@ export class OrchestratorService {
 			});
 
 			for (const conv of pendingLlmConversations) {
-				const messages = conv.messages as any[]; // Assuming array of strings
-				// Extract unread (last N) and history logic is approximate here since we merged them.
-				// For simplicity, let's treat the last message as the trigger or use unreadCount.
-				const unreadCount = conv.unreadCount || 1;
+				const messages = conv.messages as any[];
+				// Define what we send to LLM.
+
+				// Context: The FULL history (messages)
+				const history = messages;
+
+				// Unread Block (Target to reply to):
+				// We need to re-calculate "Unread" from the DB state or use `unreadCount` field we just saved.
+				const unreadCount = conv.unreadCount || messages.length;
 				const unreadMessages = messages.slice(-unreadCount);
-				const history = messages.slice(0, -unreadCount);
+
+				// Safety: If unreadMessages is empty (shouldn't be due to status), skip
+				if (unreadMessages.length === 0) {
+					this.logger.warn(`Skipping draft generation for ${conv.id} - 0 unread messages.`);
+					await this.prisma.conversation.update({
+						where: { id: conv.id },
+						data: { processingStatus: 'IDLE', unreadCount: 0 }
+					});
+					continue;
+				}
+
+				this.logger.log(`Generating draft for ${conv.id}. Context: ${history.length} msgs, Target: ${unreadMessages.length} msgs.`);
 
 				const response = await this.llmService.generateResponse(
 					account.tenantId,
@@ -254,7 +338,7 @@ export class OrchestratorService {
 						confidenceScore: response.confidence_score,
 						llmResponse: JSON.parse(JSON.stringify(response)),
 						finalMessage: response.suggested_response,
-						prompt: unreadMessages.join('\n'),
+						prompt: unreadMessages.map(m => `${m.sender}: ${m.text}`).join('\n'),
 						metadata: {
 							status: 'DRAFT',
 							dry_run: this.DRY_RUN_MODE

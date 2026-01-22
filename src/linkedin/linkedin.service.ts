@@ -510,15 +510,13 @@ export class LinkedinService implements OnModuleDestroy {
 					return header ? header.textContent?.trim() : 'Unknown';
 				}) || 'Unknown';
 
-				const unreadMessages = fullHistory.slice(-5);
-				const history = fullHistory.slice(0, -5);
-
 				results.push({
 					conversationId: `conv-unread-${index}`,
 					partnerName,
 					threadUrl,
-					unreadMessages,
-					history
+					messages: fullHistory, // Return full history
+					unreadMessages: fullHistory, // Default mapping
+					history: []
 				});
 			}
 

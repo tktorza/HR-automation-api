@@ -75,14 +75,14 @@ export class OrchestratorService {
 			// BYPASS CHECK: Check if we have enough recent data in DB to skip scraping
 			const cachedConversations = await this.prisma.conversation.findMany({
 				where: { tenantId: account.tenantId, lastScrapedAt: { not: null } },
-				take: 30,
+				take: 50,
 				orderBy: { lastMessageAt: 'desc' },
 				include: { contact: true }
 			});
 
 			let recentConvos: any[] = [];
 
-			if (cachedConversations.length >= 5 && !contextSynthesis) {
+			if (cachedConversations.length >= 10 && !contextSynthesis) {
 				this.logger.log(`[Bypass] Found ${cachedConversations.length} cached conversations in DB. Using them for context generation.`);
 				recentConvos = cachedConversations.map(c => ({
 					conversationId: c.id,
@@ -90,8 +90,8 @@ export class OrchestratorService {
 					messages: (c.messages as any[]) || []
 				}));
 			} else if (!contextSynthesis) {
-				this.logger.log(`Context synthesis missing and no cache. Scraping last 30 conversations...`);
-				recentConvos = await this.linkedinService.scrapeRecentConversations(30);
+				this.logger.log(`Context synthesis missing and no cache. Scraping last 50 conversations...`);
+				recentConvos = await this.linkedinService.scrapeRecentConversations(50);
 
 				// PERSISTENCE: Save scraped data immediately for future bypass
 				if (recentConvos.length > 0) {

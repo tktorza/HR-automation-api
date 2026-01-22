@@ -13,7 +13,7 @@ export class GeminiProvider {
 		try {
 			this.logger.debug(`Gemini Prompt: ${systemPrompt}\n${userMessage}`);
 			const model = this.client.getGenerativeModel({
-				model: 'gemini-1.5-flash',
+				model: 'gemini-2.5-flash',
 				generationConfig: {
 					responseMimeType: 'application/json',
 					temperature: 0.7,

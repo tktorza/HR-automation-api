@@ -88,7 +88,10 @@ export class LlmService implements OnModuleInit {
 		// Actually, simpler: just return the "reasoning" or a specific field if I force JSON.
 		// Let's stick to JSON to be safe with existing scaffolding.
 
-		return result.suggested_response || result.reasoning || "No context generated";
+		if (typeof result === 'string') {
+			return result;
+		}
+		return result.suggested_response || result.reasoning || null;
 	}
 
 	// UPDATED: Handle Batched Messages + Context
